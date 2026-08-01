@@ -59,8 +59,90 @@ mod window;
 use environment::{Environment, MutexId, MutexType, ThreadId, PTHREAD_MUTEX_DEFAULT};
 
 use std::path::PathBuf;
+#[cfg(target_os = "ios")]
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub use touchHLE_version::*;
+
+#[cfg(target_os = "ios")]
+static HOST_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "ios")]
+static HOST_FPS_BITS: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_os = "ios")]
+pub fn request_host_exit() {
+    HOST_EXIT_REQUESTED.store(true, Ordering::Release);
+}
+
+#[cfg(target_os = "ios")]
+pub fn clear_host_exit_request() {
+    HOST_EXIT_REQUESTED.store(false, Ordering::Release);
+    HOST_FPS_BITS.store(0, Ordering::Release);
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn report_host_fps(fps: f32) {
+    HOST_FPS_BITS.store(fps.to_bits(), Ordering::Release);
+}
+
+#[cfg(target_os = "ios")]
+pub fn host_fps() -> f32 {
+    f32::from_bits(HOST_FPS_BITS.load(Ordering::Acquire))
+}
+
+#[cfg(target_os = "ios")]
+pub struct HostAppMetadata {
+    pub display_name: String,
+    pub bundle_identifier: String,
+    pub orientation_capabilities: u32,
+    pub icon_rgba: Vec<u8>,
+    pub icon_width: u32,
+    pub icon_height: u32,
+}
+
+#[cfg(target_os = "ios")]
+pub fn inspect_host_app(path: &std::path::Path) -> Result<HostAppMetadata, String> {
+    let bundle_data = fs::BundleData::open_any(path)?;
+    let (bundle, fs) = bundle::Bundle::new_bundle_and_fs_from_host_path(bundle_data, true)?;
+
+    let display_name = if bundle.display_name().is_empty() {
+        bundle.bundle_name()
+    } else {
+        bundle.display_name()
+    }
+    .to_owned();
+    let bundle_identifier = bundle.bundle_identifier().to_owned();
+    let supported_orientations = bundle.supported_interface_orientations();
+    let supports_portrait = supported_orientations
+        .iter()
+        .any(|orientation| orientation.contains("Portrait"));
+    let supports_landscape = supported_orientations
+        .iter()
+        .any(|orientation| orientation.contains("Landscape"));
+    let orientation_capabilities =
+        u32::from(supports_portrait) | (u32::from(supports_landscape) << 1);
+    let (icon_rgba, icon_width, icon_height) = match bundle.load_icon(&fs) {
+        Ok(icon) => {
+            let (width, height) = icon.dimensions();
+            (icon.pixels().to_vec(), width, height)
+        }
+        Err(_) => (Vec::new(), 0, 0),
+    };
+
+    Ok(HostAppMetadata {
+        display_name,
+        bundle_identifier,
+        orientation_capabilities,
+        icon_rgba,
+        icon_width,
+        icon_height,
+    })
+}
+
+#[cfg(target_os = "ios")]
+fn take_host_exit_request() -> bool {
+    HOST_EXIT_REQUESTED.swap(false, Ordering::AcqRel)
+}
 
 /// This is the true entry point on Android (SDLActivity calls it after
 /// initialization). On other platforms the true entry point is in src/bin.rs.

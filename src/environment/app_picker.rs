@@ -242,7 +242,13 @@ const CLASSES: ClassExports = objc_classes! {
     // Assert (see above).
     let _ = env.objc.borrow_mut::<AppPickerDelegateHostObject>(this);
 
-    match paths::url_for_opening_user_data_dir() {
+    let url = if std::env::consts::OS == "ios" {
+        Ok("shareddocuments://".to_string())
+    } else {
+        paths::url_for_opening_user_data_dir()
+    };
+
+    match url {
         Ok(url) => {
             // Our `openURL:` implementation is bypassed because it doesn't
             // allow non-web URLs.
@@ -250,8 +256,10 @@ const CLASSES: ClassExports = objc_classes! {
             if let Err(e) = url_res {
                 echo!("Couldn't open file manager at {:?}: {}", url, e);
             } else {
-                echo!("Opened file manager at {:?}, exiting.", url);
-                std::process::exit(0);
+                echo!("Opened file manager at {:?}.", url);
+                if std::env::consts::OS != "ios" {
+                    std::process::exit(0);
+                }
             }
         },
         Err(e) => echo!("Couldn't open file manager: {}", e),
@@ -261,6 +269,16 @@ const CLASSES: ClassExports = objc_classes! {
 - (())visitWebsite {
     // Assert (see above).
     let _ = env.objc.borrow_mut::<AppPickerDelegateHostObject>(this);
+
+    if std::env::consts::OS == "ios" {
+        let url = "https://touchhle.org/";
+        if let Err(e) = crate::window::open_url(env, url) {
+            echo!("Couldn't open website at {:?}: {}", url, e);
+        } else {
+            echo!("Opened website at {:?}.", url);
+        }
+        return;
+    }
 
     let url = ns_string::get_static_str(env, "https://touchhle.org/");
     let url: id = msg_class![env; NSURL URLWithString:url];
@@ -273,9 +291,13 @@ const CLASSES: ClassExports = objc_classes! {
 };
 
 fn show_app_picker_gui(
-    options: Options,
+    mut options: Options,
     apps: Result<Vec<AppInfo>, String>,
 ) -> Result<(PathBuf, Vec<String>), String> {
+    if std::env::consts::OS == "ios" && options.scale_hack.get() == 1 {
+        options.scale_hack = NonZeroU32::new(3).unwrap();
+    }
+
     let icon = {
         let bytes: &[u8] = match crate::branding() {
             "" => include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/res/icon.png")),
@@ -526,12 +548,13 @@ fn app_picker_inner(
     let mut copyright_info_stuff = setup_copyright_info(env, delegate, main_view, app_frame);
     let mut copyright_info_page_idx = 0;
 
-    let quick_options_stuff = setup_quick_options(env, delegate, main_view, app_frame);
+    let mut quick_options_network = load_ios_network_access_preference();
+    let quick_options_stuff =
+        setup_quick_options(env, delegate, main_view, app_frame, quick_options_network);
     let mut quick_options_scale_hack: Option<NonZeroU32> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = false;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
@@ -714,6 +737,7 @@ fn app_picker_inner(
             quick_options_analog_stick_tilt_controls = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.network) {
             quick_options_network = enabled;
+            save_ios_network_access_preference(enabled);
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
                 false => None,
@@ -1092,7 +1116,6 @@ fn setup_copyright_info(
 
     let main_view: id = msg_class![env; UIView alloc];
     let main_view: id = msg![env; main_view initWithFrame:main_frame];
-    // TODO: Isn't white the default?
     let bg_color: id = msg_class![env; UIColor whiteColor];
     () = msg![env; main_view setBackgroundColor:bg_color];
     // This main_view is hidden until the copyright info button is tapped.
@@ -1266,11 +1289,34 @@ struct QuickOptionsStuff {
     orientation_buttons: [id; 4],
 }
 
+const IOS_NETWORK_ACCESS_PREFERENCE_FILE: &str = ".touchHLE_network_access";
+
+fn load_ios_network_access_preference() -> bool {
+    if std::env::consts::OS != "ios" {
+        return false;
+    }
+
+    let path = paths::user_data_base_path().join(IOS_NETWORK_ACCESS_PREFERENCE_FILE);
+    std::fs::read_to_string(path).is_ok_and(|value| value.trim().eq_ignore_ascii_case("enabled"))
+}
+
+fn save_ios_network_access_preference(enabled: bool) {
+    if std::env::consts::OS != "ios" {
+        return;
+    }
+
+    let path = paths::user_data_base_path().join(IOS_NETWORK_ACCESS_PREFERENCE_FILE);
+    if let Err(error) = std::fs::write(path, if enabled { "enabled\n" } else { "disabled\n" }) {
+        echo!("Couldn't save iOS network access preference: {}", error);
+    }
+}
+
 fn setup_quick_options(
     env: &mut Environment,
     delegate: id,
     super_view: id,
     app_frame: CGRect,
+    network_access_default: bool,
 ) -> QuickOptionsStuff {
     // UIView*
     let main_frame = CGRect {
@@ -1282,8 +1328,7 @@ fn setup_quick_options(
 
     let main_view: id = msg_class![env; UIView alloc];
     let main_view: id = msg![env; main_view initWithFrame:main_frame];
-    // TODO: Isn't white the default?
-    let bg_color: id = msg_class![env; UIColor whiteColor];
+    let bg_color: id = msg_class![env; UIColor blackColor];
     () = msg![env; main_view setBackgroundColor:bg_color];
     // This main_view is hidden until the copyright info button is tapped.
     () = msg![env; main_view setHidden:true];
@@ -1312,7 +1357,7 @@ fn setup_quick_options(
         () = msg![env; button layoutSubviews];
 
         let label: id = msg![env; button titleLabel];
-        let font: id = msg_class![env; UIFont systemFontOfSize:(30.0 as CGFloat)];
+        let font: id = msg_class![env; UIFont boldSystemFontOfSize:(30.0 as CGFloat)];
         () = msg![env; label setFont:font];
 
         let selector = env.objc.lookup_selector("quickOptionsHide").unwrap();
@@ -1344,7 +1389,7 @@ fn setup_quick_options(
             ("↓", "orientationPortraitUpsideDown"),
         ]),
         RowKind::Label("Network access"),
-        RowKind::Switch("network:", false),
+        RowKind::Switch("network:", network_access_default),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)
@@ -1383,10 +1428,14 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentCenter];
+                let font: id = msg_class![env; UIFont boldSystemFontOfSize:(15.0 as CGFloat)];
+                () = msg![env; label setFont:font];
+                let text_color: id = msg_class![env; UIColor lightGrayColor];
+                () = msg![env; label setTextColor:text_color];
                 () = msg![env; main_view addSubview:label];
             }
             RowKind::Buttons(buttons) => {
-                button_rows.push(make_button_row(
+                let buttons = make_button_row(
                     env,
                     delegate,
                     main_view,
@@ -1394,7 +1443,13 @@ fn setup_quick_options(
                     row_center,
                     buttons,
                     /* font_size: */ None,
-                ));
+                );
+                for &button in &buttons {
+                    let label: id = msg![env; button titleLabel];
+                    let font: id = msg_class![env; UIFont boldSystemFontOfSize:(14.0 as CGFloat)];
+                    () = msg![env; label setFont:font];
+                }
+                button_rows.push(buttons);
             }
             RowKind::Switch(selector, default_state) => {
                 let switch_frame = CGRect {

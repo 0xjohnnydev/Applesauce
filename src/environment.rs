@@ -1293,6 +1293,15 @@ impl Environment {
         let panic_cell = self.panic_cell.clone();
         let mut stepping = false;
         loop {
+            #[cfg(target_os = "ios")]
+            if crate::take_host_exit_request() {
+                echo!("Returning to the iOS host library.");
+                let thread = &mut self.threads[self.current_thread];
+                assert!(thread.host_context.is_none());
+                thread.host_context = Some(curr_host_context);
+                return;
+            }
+
             if stepping {
                 self.remaining_ticks = None;
             } else {

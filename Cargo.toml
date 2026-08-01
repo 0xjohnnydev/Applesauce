@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 [workspace]
+members = ["platform/ios/rust-entry"]
 
 [workspace.package]
 version = "0.2.3"
@@ -68,8 +69,8 @@ encoding_rs = "0.8.35"
 # behind this, but the actual HIDAPI is not used by touchHLE (see window.rs).
 # Note that the submodule in vendor/SDL2/ must use exactly the same revision of
 # SDL2 that rust-sdl2 uses, so that the Android JNI interface matches.
-sdl2 = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3", features = ["hidapi"] }
-sdl2-sys = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3" }
+sdl2 = { path = "vendor/rust-sdl2", features = ["hidapi"] }
+sdl2-sys = { path = "vendor/rust-sdl2/sdl2-sys" }
 touchHLE_dynarmic_wrapper = { path = "src/cpu/dynarmic_wrapper" }
 touchHLE_gl_bindings = { path = "src/gles/gl_bindings" }
 touchHLE_openal_soft_wrapper = { path = "src/audio/openal_soft_wrapper" }

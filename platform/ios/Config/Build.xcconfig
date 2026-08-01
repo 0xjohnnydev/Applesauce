@@ -1,0 +1,30 @@
+PRODUCT_NAME = touchHLE
+PRODUCT_BUNDLE_IDENTIFIER = org.touchhle.ios.unofficial
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+IPHONEOS_DEPLOYMENT_TARGET = 17.4
+TARGETED_DEVICE_FAMILY = 1,2
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SDKROOT = iphoneos
+ARCHS = arm64
+CLANG_ENABLE_MODULES = YES
+CLANG_C_LANGUAGE_STANDARD = gnu17
+SWIFT_VERSION = 5.0
+SWIFT_OBJC_BRIDGING_HEADER = Sources/TouchHLEHost-Bridging-Header.h
+GCC_PREPROCESSOR_DEFINITIONS = $(inherited) GLES_SILENCE_DEPRECATION=1
+ENABLE_BITCODE = NO
+COPY_PHASE_STRIP = NO
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = Config/Info.plist
+CODE_SIGN_ENTITLEMENTS = Config/TouchHLEHost.entitlements
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+TOUCHHLE_REPO = $(SRCROOT)/../..
+SDL_ROOT = $(TOUCHHLE_REPO)/vendor/SDL
+HEADER_SEARCH_PATHS = $(inherited) "$(SDL_ROOT)/include"
+RUST_BUILD_DIR = $(TOUCHHLE_REPO)/build/rust-ios-native
+LIBRARY_SEARCH_PATHS[config=Debug][sdk=iphonesimulator*] = $(inherited) "$(RUST_BUILD_DIR)/aarch64-apple-ios-sim/debug"
+LIBRARY_SEARCH_PATHS[config=Release][sdk=iphonesimulator*] = $(inherited) "$(RUST_BUILD_DIR)/aarch64-apple-ios-sim/release"
+LIBRARY_SEARCH_PATHS[config=Debug][sdk=iphoneos*] = $(inherited) "$(RUST_BUILD_DIR)/aarch64-apple-ios/debug"
+LIBRARY_SEARCH_PATHS[config=Release][sdk=iphoneos*] = $(inherited) "$(RUST_BUILD_DIR)/aarch64-apple-ios/release"
+OTHER_LDFLAGS = $(inherited) -ObjC -ltouchhle_ios_entry -lc++ -liconv -framework AVFoundation -framework AudioToolbox -framework CoreBluetooth -framework CoreGraphics -framework CoreHaptics -framework CoreMotion -framework Foundation -framework GameController -framework Metal -framework OpenGLES -framework QuartzCore -framework UIKit
+CODE_SIGN_STYLE = Automatic

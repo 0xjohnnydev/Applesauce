@@ -1,0 +1,44 @@
+{
+  "name": "touchHLE iOS (Unofficial)",
+  "subtitle": "Experimental touchHLE port for modern iPhones",
+  "description": "An unofficial iOS port based on the touchHLE 0.2.3 development line. JIT and legally obtained decrypted 32-bit IPAs are required. Games are not included.",
+  "iconURL": "https://raw.githubusercontent.com/johnny901901901/touchHLE/ios-host/platform/ios/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+  "website": "https://github.com/johnny901901901/touchHLE",
+  "tintColor": "1399FF",
+  "apps": [
+    {
+      "name": "touchHLE",
+      "bundleIdentifier": "org.touchhle.ios.unofficial",
+      "developerName": "Unofficial iOS port contributors",
+      "subtitle": "Run supported early 32-bit iPhone games",
+      "localizedDescription": "A native iOS port based on the touchHLE 0.2.3 development line, with IPA importing, artwork, persistent saves, orientation handling, a return-to-library control, and optional FPS display. JIT must be enabled for each new app process. No games are included.",
+      "iconURL": "https://raw.githubusercontent.com/johnny901901901/touchHLE/ios-host/platform/ios/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "tintColor": "1399FF",
+      "category": "games",
+      "screenshots": [
+        "https://raw.githubusercontent.com/johnny901901901/touchHLE/ios-host/platform/ios/Screenshots/library-empty.png",
+        "https://raw.githubusercontent.com/johnny901901901/touchHLE/ios-host/platform/ios/Screenshots/settings.png",
+        "https://raw.githubusercontent.com/johnny901901901/touchHLE/ios-host/platform/ios/Screenshots/about.png"
+      ],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "buildVersion": "1",
+          "date": "2026-08-01",
+          "localizedDescription": "First public iOS port prerelease based on the touchHLE 0.2.3 development line.",
+          "downloadURL": "https://github.com/johnny901901901/touchHLE/releases/download/ios-v0.1.0/touchHLE-iOS-unsigned.ipa",
+          "size": 16065421,
+          "sha256": "a00bba8d434ab52f6a393a03215a75862009ab83edb86887d1d05a90dea4bb1f",
+          "minOSVersion": "17.4"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "get-task-allow"
+        ],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": []
+}

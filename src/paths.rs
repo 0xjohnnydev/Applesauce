@@ -35,16 +35,16 @@ pub const FONTS_DIR: &str = "touchHLE_fonts";
 /// Name of the file containing touchHLE's default options for various apps.
 pub const DEFAULT_OPTIONS_FILE: &str = "touchHLE_default_options.txt";
 
-/// macOS-only: If touchHLE is located in a .app bundle, return the path of the
-/// Resources directory. If touchHLE is not located in a .app bundle, return
+/// On Apple hosts, if touchHLE is located in an app bundle, return its resource
+/// path. If touchHLE is not located in an app bundle, return
 /// [None].
 #[allow(dead_code)]
-fn get_macos_bundled_resources_path() -> Option<PathBuf> {
-    if std::env::consts::OS != "macos" {
+fn get_bundled_resources_path() -> Option<PathBuf> {
+    if !matches!(std::env::consts::OS, "ios" | "macos") {
         return None;
     }
     let base_path = PathBuf::from(sdl2::filesystem::base_path().ok()?);
-    if base_path.file_name().is_some_and(|p| p == "Resources") {
+    if std::env::consts::OS == "ios" || base_path.file_name().is_some_and(|p| p == "Resources") {
         Some(base_path)
     } else {
         None
@@ -70,7 +70,7 @@ impl ResourceFile {
             // On other OSes, resources are accessed as ordinary files.
             #[cfg(not(target_os = "android"))]
             file: {
-                let base_path = get_macos_bundled_resources_path();
+                let base_path = get_bundled_resources_path();
                 // When not in a bundle, look in the current directory.
                 let path = base_path.as_deref().unwrap_or(Path::new(".")).join(path);
                 std::fs::File::open(path).map_err(|e| e.to_string())?
@@ -89,7 +89,8 @@ impl std::fmt::Debug for ResourceFile {
 
 /// Whether various resources are in user-accessible files. If they aren't,
 /// touchHLE has to be able to display their license terms.
-pub const RESOURCES_ARE_EXTERNAL_FILES: bool = cfg!(not(target_os = "android"));
+pub const RESOURCES_ARE_EXTERNAL_FILES: bool =
+    cfg!(not(any(target_os = "android", target_os = "ios")));
 
 /// Name of the directory where the user can put apps if they want them to
 /// appear in the app picker.
@@ -136,10 +137,15 @@ pub fn user_data_base_path() -> Cow<'static, Path> {
     }
     #[cfg(not(target_os = "android"))]
     {
+        if std::env::consts::OS == "ios" {
+            let home = std::env::var_os("HOME").expect("iOS app container has no HOME path");
+            return Cow::from(PathBuf::from(home).join("Documents"));
+        }
+
         // When touchHLE is run from a .app bundle on macOS, the user might not
         // be able to control the current directory, so user data needs to go in
         // a standard location.
-        if get_macos_bundled_resources_path().is_some() {
+        if get_bundled_resources_path().is_some() {
             return Cow::from(PathBuf::from(
                 sdl2::filesystem::pref_path("touchhle.org", "touchHLE").unwrap(),
             ));
@@ -182,7 +188,7 @@ pub fn url_for_opening_user_data_dir() -> Result<String, String> {
 /// doesn't exist, and populate it with templates or README files. (On other
 /// platforms these are simply bundled with touchHLE in a ZIP file.)
 pub fn prepopulate_user_data_dir() {
-    if std::env::consts::OS != "android" && std::env::consts::OS != "macos" {
+    if !matches!(std::env::consts::OS, "android" | "ios" | "macos") {
         return;
     }
     let base_path = user_data_base_path();
