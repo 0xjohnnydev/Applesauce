@@ -30,6 +30,11 @@ path = "src/bin.rs"
 [features]
 default = ["static"]
 static = ["sdl2/bundled", "sdl2/static-link", "touchHLE_openal_soft_wrapper/static"]
+# Like "static", but SDL2 is linked dynamically against a shared library
+# supplied by the host. The iOS host app loads a core as a dylib at runtime, and
+# SDL owns the process entry point and the UIApplicationDelegate, so the app and
+# the core have to be the same SDL — a core cannot bring its own copy.
+dynamic-sdl = ["touchHLE_openal_soft_wrapper/static"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

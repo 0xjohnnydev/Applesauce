@@ -103,7 +103,8 @@ pub struct HostAppMetadata {
 #[cfg(target_os = "ios")]
 pub fn inspect_host_app(path: &std::path::Path) -> Result<HostAppMetadata, String> {
     let bundle_data = fs::BundleData::open_any(path)?;
-    let (bundle, fs) = bundle::Bundle::new_bundle_and_fs_from_host_path(bundle_data, true)?;
+    let (bundle, fs) =
+        bundle::Bundle::new_bundle_and_fs_from_host_path(bundle_data, true)?;
 
     let display_name = if bundle.display_name().is_empty() {
         bundle.bundle_name()
@@ -398,7 +399,8 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         }
         Ok(())
     }
-    let default_options_path = paths::DEFAULT_OPTIONS_FILE;
+    let default_options_file = paths::default_options_file();
+    let default_options_path = default_options_file.as_str();
     match paths::ResourceFile::open(default_options_path) {
         Ok(mut file) => apply_options(file.get(), default_options_path, &mut options, app_id)?,
         Err(err) => echo!("Warning: Could not open {}: {}", default_options_path, err),

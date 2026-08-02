@@ -5,7 +5,10 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["staticlib"]
+# Built as a dylib so the iOS host app can ship this core alongside HyperHLE and
+# load whichever one a game needs. See platform/ios in the port repository.
+name = "touchhle_core"
+crate-type = ["cdylib"]
 
 [dependencies]
-touchHLE = { path = "../../.." }
+touchHLE = { path = "../../..", default-features = false, features = ["dynamic-sdl"] }

@@ -35,6 +35,19 @@ pub const FONTS_DIR: &str = "touchHLE_fonts";
 /// Name of the file containing touchHLE's default options for various apps.
 pub const DEFAULT_OPTIONS_FILE: &str = "touchHLE_default_options.txt";
 
+/// The default options file to actually read.
+///
+/// A host that ships more than one emulator core needs one file per core: the
+/// cores understand different options, and an option a core does not recognise
+/// aborts the launch. The iOS host sets `TOUCHHLE_DEFAULT_OPTIONS_FILE` to the
+/// file belonging to the core it loaded.
+pub fn default_options_file() -> String {
+    std::env::var("TOUCHHLE_DEFAULT_OPTIONS_FILE")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| DEFAULT_OPTIONS_FILE.to_string())
+}
+
 /// On Apple hosts, if touchHLE is located in an app bundle, return its resource
 /// path. If touchHLE is not located in an app bundle, return
 /// [None].
@@ -44,7 +57,9 @@ fn get_bundled_resources_path() -> Option<PathBuf> {
         return None;
     }
     let base_path = PathBuf::from(sdl2::filesystem::base_path().ok()?);
-    if std::env::consts::OS == "ios" || base_path.file_name().is_some_and(|p| p == "Resources") {
+    if std::env::consts::OS == "ios"
+        || base_path.file_name().is_some_and(|p| p == "Resources")
+    {
         Some(base_path)
     } else {
         None
