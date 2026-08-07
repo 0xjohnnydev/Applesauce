@@ -13,7 +13,6 @@
 #include <unistd.h>
 
 #import <Foundation/Foundation.h>
-#import <TargetConditionals.h>
 
 // Each emulator core exports this; the host passes in the one belonging to the
 // core it loaded for this game.
@@ -110,13 +109,7 @@ static bool touchhle_has_dynamic_codesigning(void) {
 }
 
 bool touchhle_ios_jit_available(void) {
-#if TARGET_OS_SIMULATOR
-    // The simulator uses the macOS virtual-memory policy. Oaknut can switch
-    // its mapping between writable and executable without an iOS JIT grant.
-    return true;
-#else
     return touchhle_ios_jit_is_from_debugger() || touchhle_has_dynamic_codesigning();
-#endif
 }
 
 // Do NOT add an mmap PROT_WRITE | PROT_EXEC probe here. Per mmap(2), iOS
