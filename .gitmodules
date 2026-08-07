@@ -4,8 +4,8 @@
 	branch = dev
 [submodule "dynarmic"]
 	path = vendor/dynarmic
-	url = https://github.com/johnny901901901/dynarmic.git
-	branch = ios-hyperhle-experiment
+	url = https://github.com/0xjohnnydev/dynarmic.git
+	branch = agent/ios16-jit-mapping
 [submodule "openal-soft"]
 	path = vendor/openal-soft
 	url = https://github.com/kcat/openal-soft

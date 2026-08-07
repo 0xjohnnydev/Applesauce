@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #import <Foundation/Foundation.h>
+#import <TargetConditionals.h>
 
 // Each emulator core exports this; the host passes in the one belonging to the
 // core it loaded for this game.
@@ -42,10 +43,9 @@ extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
 #define TOUCHHLE_CS_DEBUGGED 0x10000000
 
 bool touchhle_ios_jit_is_from_debugger(void) {
-    // dynarmic's code allocator asks for its executable memory by executing
-    // `brk #0xf00d` (see oaknut's prepare_jit_region), a trap that only an
-    // attached debugger can service. With none attached the trap is fatal the
-    // instant a game starts, which reads as the app quitting for no reason.
+    // Before iOS 26, CS_DEBUGGED lets dynarmic switch its JIT mapping between
+    // writable and executable. On iOS 26 and newer, Oaknut uses StikDebug's
+    // `brk #0xf00d` protocol to request an executable mapping instead.
     unsigned int flags = 0;
     if (csops(getpid(), TOUCHHLE_CS_OPS_STATUS, &flags, sizeof(flags)) == 0
         && (flags & TOUCHHLE_CS_DEBUGGED) != 0) {
@@ -110,7 +110,13 @@ static bool touchhle_has_dynamic_codesigning(void) {
 }
 
 bool touchhle_ios_jit_available(void) {
+#if TARGET_OS_SIMULATOR
+    // The simulator uses the macOS virtual-memory policy. Oaknut can switch
+    // its mapping between writable and executable without an iOS JIT grant.
+    return true;
+#else
     return touchhle_ios_jit_is_from_debugger() || touchhle_has_dynamic_codesigning();
+#endif
 }
 
 // Do NOT add an mmap PROT_WRITE | PROT_EXEC probe here. Per mmap(2), iOS

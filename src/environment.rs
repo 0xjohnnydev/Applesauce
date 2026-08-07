@@ -251,6 +251,27 @@ fn generate_binary_load_order(graph: &[BinaryDependencyNode]) -> Result<Vec<usiz
 static ENVIRONMENT_INSTANCE_EXISTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+struct EnvironmentInstanceReservation;
+
+impl EnvironmentInstanceReservation {
+    fn acquire() -> Result<Self, String> {
+        if ENVIRONMENT_INSTANCE_EXISTS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err("Only one (real) Environment can exist at a time!".to_string());
+        }
+        Ok(Self)
+    }
+
+    fn commit(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for EnvironmentInstanceReservation {
+    fn drop(&mut self) {
+        ENVIRONMENT_INSTANCE_EXISTS.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl Environment {
     /// Loads the binary and sets up the emulator.
     pub fn new(
@@ -282,9 +303,7 @@ impl Environment {
         }
         // Enforces the one (real) Environment limit. See `with_yielder` for
         // why this is needed.
-        if ENVIRONMENT_INSTANCE_EXISTS.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return Err("Only one (real) Environment can exist at a time!".to_string());
-        }
+        let instance_reservation = EnvironmentInstanceReservation::acquire()?;
 
         // Certain apps need to launch in a non-portrait orientation, and this
         // should be handled before creating the window because handling of
@@ -494,10 +513,17 @@ impl Environment {
         .map_err(|e| format!("Could not load executable: {e}"))?;
 
         let mut dylibs = Vec::new();
-        for dylib in &executable.dynamic_libraries {
+        let mut pending_dylibs: VecDeque<String> =
+            executable.dynamic_libraries.iter().cloned().collect();
+        let mut seen_dylibs = HashSet::new();
+        while let Some(dylib) = pending_dylibs.pop_front() {
+            if !seen_dylibs.insert(dylib.clone()) {
+                continue;
+            }
+
             // There are some Free Software libraries bundled with touchHLE and
             // exposed via the guest file system (see Fs::new()).
-            let dylib_path = fs::GuestPath::new(dylib);
+            let dylib_path = fs::GuestPath::new(&dylib);
             if fs.is_file(dylib_path) {
                 // We use hardcoded slide values for libgcc and libstdc++
                 // based on base addresses of those dylibs prior to iOS 3.1
@@ -537,18 +563,19 @@ impl Environment {
                 };
 
                 let dylib = mach_o::MachO::load_from_file(
-                    fs::GuestPath::new(dylib),
+                    dylib_path,
                     &fs,
                     &mut mem,
                     dylib_slide,
                 )
                 .map_err(|e| format!("Could not load bundled dylib: {e}"))?;
 
+                pending_dylibs.extend(dylib.dynamic_libraries.iter().cloned());
                 dylibs.push(dylib);
             // Otherwise, look for it in our host implementations.
             } else if !crate::dyld::DYLIB_LIST
                 .iter()
-                .any(|d| d.path == dylib || d.aliases.contains(&dylib.as_str()))
+                .any(|d| d.path == dylib.as_str() || d.aliases.contains(&dylib.as_str()))
             {
                 log!(
                     "Warning: app binary depends on unimplemented or missing dylib \"{}\"",
@@ -816,6 +843,7 @@ impl Environment {
         }
 
         env.cpu.branch(entry_point_addr);
+        instance_reservation.commit();
         Ok(env)
     }
 
@@ -832,10 +860,7 @@ impl Environment {
     ) -> Result<Environment, String> {
         // Enforces a one (real) Environment limit. See `with_yielder` for
         // why this is needed.
-        if ENVIRONMENT_INSTANCE_EXISTS.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("Only one (real) Environment can exist at a time!".to_string());
-        }
-        ENVIRONMENT_INSTANCE_EXISTS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let instance_reservation = EnvironmentInstanceReservation::acquire()?;
         let bundle = bundle::Bundle::new_fake_bundle();
         let fs = fs::Fs::new_fake_fs();
 
@@ -932,6 +957,7 @@ impl Environment {
         // "CPU emulation begins now" would happen here, but there's nothing
         // to emulate. :)
 
+        instance_reservation.commit();
         Ok(env)
     }
 
