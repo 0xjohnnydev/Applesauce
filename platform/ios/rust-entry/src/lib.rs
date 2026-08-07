@@ -164,6 +164,9 @@ pub unsafe extern "C" fn touchhle_ios_run_game(
     };
 
     let mut args = vec!["touchHLE".to_owned(), path];
+    // The native host restores its library window and presents launch errors.
+    // An SDL message box here can remain behind the hidden game window.
+    args.push("--no-error-popup".to_owned());
 
     if (1..=4).contains(&scale_hack) {
         args.push(format!("--scale-hack={scale_hack}"));
