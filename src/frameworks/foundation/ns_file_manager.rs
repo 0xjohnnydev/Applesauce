@@ -14,7 +14,7 @@ use crate::fs::{FsError, GuestPath, GuestPathBuf};
 use crate::mem::{ConstPtr, MutPtr, Ptr};
 use crate::objc::{
     autorelease, id, msg, msg_class, nil, objc_classes, release, ClassExports, HostObject,
-    NSZonePtr,
+    NSZonePtr, TrivialHostObject,
 };
 use crate::Environment;
 
@@ -313,20 +313,24 @@ fn NSOpenStepRootDirectory(_env: &mut Environment) -> id {
     nil // Not typically used on iOS
 }
 
+/// `NSAllocateObject` is the primitive that `+alloc` wraps: allocate a
+/// zero-filled instance of `class` with `extra_bytes` of indexed storage,
+/// without any message dispatch. It must not be implemented by sending
+/// `alloc`: apps override `+allocWithZone:` to call `NSAllocateObject` with a
+/// computed size (e.g. Google Tag Manager's protobuf runtime in Blade Dash),
+/// so dispatching `alloc` from here sends the two into infinite mutual
+/// recursion.
 fn NSAllocateObject(
     env: &mut Environment,
     class: id,
     extra_bytes: NSUInteger,
     _zone: NSZonePtr,
 ) -> id {
-    if extra_bytes > 0 {
-        log!(
-            "Warning: NSAllocateObject called with extra_bytes={}, which is currently unhandled!",
-            extra_bytes
-        );
+    if class == nil {
+        return nil;
     }
-
-    msg![env; class alloc]
+    env.objc
+        .alloc_object_with_extra_bytes(class, extra_bytes, Box::new(TrivialHostObject), &mut env.mem)
 }
 
 fn NSDeallocateObject(env: &mut Environment, object: id) {
