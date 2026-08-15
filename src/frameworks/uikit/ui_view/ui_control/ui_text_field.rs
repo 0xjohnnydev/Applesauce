@@ -405,7 +405,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (bool)canResignFirstResponder { true }
 
 - (bool)becomeFirstResponder {
-    if env.objc.borrow::<UITextFieldHostObject>(this).editing { return true; }
+    if env.objc.borrow::<UITextFieldHostObject>(this).editing {
+        // Already editing, but re-assert host text input so that tapping the
+        // field again re-summons the keyboard if the system dismissed it.
+        env.on_parent_stack_in_coroutine(|window, _| window.start_text_input());
+        return true;
+    }
 
     let delegate: id = env.objc.borrow::<UITextFieldHostObject>(this).delegate;
     let mut delegate_alive = false;

@@ -560,6 +560,13 @@ pub struct Window {
     controllers: Vec<sdl2::controller::GameController>,
     dpad_state: DpadState,
     stick_active: bool,
+    /// Whether the guest currently wants text input (a guest text field is
+    /// being edited). SDL can drop its own text-input state behind our back —
+    /// on iOS, the system hiding the keyboard (e.g. hardware-keyboard mode in
+    /// the simulator) makes SDL stop text input and resign its hidden text
+    /// field — so this remembers the guest's intent and lets the event loop
+    /// re-assert it.
+    text_input_wanted: bool,
     _sensor_ctx: sdl2::SensorSubsystem,
     accelerometer: Option<sdl2::sensor::Sensor>,
     virtual_cursor_last: Option<(f32, f32, bool, bool)>,
@@ -758,6 +765,7 @@ impl Window {
                 active: false,
             },
             stick_active: false,
+            text_input_wanted: false,
             _sensor_ctx: sensor_ctx,
             accelerometer,
             virtual_cursor_last: None,
@@ -831,6 +839,18 @@ impl Window {
             return;
         }
         self.last_polled = now;
+
+        // The system can tear down SDL's text-input state while the guest is
+        // still editing a text field (on iOS, hiding the keyboard makes SDL
+        // stop text input and resign its hidden text field, after which typed
+        // characters no longer arrive as SDL_TEXTINPUT events). Re-assert it
+        // so an active guest text session keeps receiving text.
+        if self.text_input_wanted && unsafe { sdl2_sys::SDL_IsTextInputActive() } == sdl2_sys::SDL_bool::SDL_FALSE {
+            log!("Text input was stopped externally while the guest is editing; restarting it.");
+            unsafe {
+                sdl2_sys::SDL_StartTextInput();
+            }
+        }
 
         fn transform_input_coords(
             window: &Window,
@@ -1999,16 +2019,18 @@ impl Window {
         }
     }
 
-    pub fn start_text_input(&self) {
+    pub fn start_text_input(&mut self) {
+        self.text_input_wanted = true;
         if !self.on_main_stack {
-            log!("Warning: start_text_input called off main stack, skipping");
+            log!("Warning: start_text_input called off main stack, deferring to event loop");
             return;
         }
         unsafe {
             sdl2_sys::SDL_StartTextInput();
         }
     }
-    pub fn stop_text_input(&self) {
+    pub fn stop_text_input(&mut self) {
+        self.text_input_wanted = false;
         if !self.on_main_stack {
             log!("Warning: stop_text_input called off main stack, skipping");
             return;
