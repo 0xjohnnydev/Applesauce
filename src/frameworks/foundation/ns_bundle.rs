@@ -1091,10 +1091,32 @@ fn load_strings_as_standard_format(env: &mut Environment, dict_url: id) -> id {
     assert!(length > 2);
     let bytes: ConstVoidPtr = msg![env; data bytes];
     let maybe_bom = env.mem.bytes_at(bytes.cast(), 2);
-    assert!(maybe_bom[0..2] != [0xFE, 0xFF] && maybe_bom[0..2] != [0xFF, 0xFE]); // TODO: UTF-16 cases
-    let strings_str = msg_class![env; NSString alloc];
-    let strings_str: id = msg![env; strings_str initWithData:data encoding:NSUTF8StringEncoding];
-    assert!(strings_str != nil); // TODO
+    // .strings files are conventionally UTF-16 with a BOM (Apple's docs
+    // recommended UTF-16 for them until the plist era), so old apps ship
+    // them that way — e.g. Talking Tom's Localizable.strings.
+    let utf16_be = maybe_bom[0..2] == [0xFE, 0xFF];
+    let utf16_le = maybe_bom[0..2] == [0xFF, 0xFE];
+    let strings_str: id = if utf16_be || utf16_le {
+        let all = env.mem.bytes_at(bytes.cast(), length).to_vec();
+        let units: Vec<u16> = all[2..]
+            .chunks_exact(2)
+            .map(|pair| {
+                if utf16_be {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
+        let decoded = String::from_utf16_lossy(&units);
+        ns_string::from_rust_string(env, decoded)
+    } else {
+        let strings_str = msg_class![env; NSString alloc];
+        let strings_str: id =
+            msg![env; strings_str initWithData:data encoding:NSUTF8StringEncoding];
+        assert!(strings_str != nil); // TODO
+        strings_str
+    };
 
     let comment_start = ns_string::get_static_str(env, "/*");
     let comment_end = ns_string::get_static_str(env, "*/");
