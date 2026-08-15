@@ -1410,7 +1410,29 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
     let mut available_frames: u64 = match capture_device {
         Some(device) => {
             let bytes = unsafe { sdl2_sys::SDL_GetQueuedAudioSize(device) };
-            (bytes / bytes_per_frame) as u64
+            let mut frames = (bytes / bytes_per_frame) as u64;
+            // The microphone produces audio in real time, but the guest might
+            // consume it slower than that (e.g. interpreted emulation).
+            // Without a bound, the backlog grows forever and the guest spends
+            // all its time on ever-staler audio. Drop the oldest samples past
+            // half a second, like real hardware overrunning its ring buffer.
+            let max_backlog = (format.sample_rate as u64) / 2;
+            if frames > max_backlog {
+                let mut drop_bytes = (frames - max_backlog) * bytes_per_frame as u64;
+                let mut scratch = [0u8; 0x10000];
+                while drop_bytes > 0 {
+                    let chunk = drop_bytes.min(scratch.len() as u64) as u32;
+                    let got = unsafe {
+                        sdl2_sys::SDL_DequeueAudio(device, scratch.as_mut_ptr().cast(), chunk)
+                    };
+                    if got == 0 {
+                        break;
+                    }
+                    drop_bytes -= got as u64;
+                }
+                frames = max_backlog;
+            }
+            frames
         }
         None => {
             // Silence fallback: pretend frames arrive in real time.
