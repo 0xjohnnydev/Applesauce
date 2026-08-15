@@ -26,7 +26,7 @@
           "buildVersion": "1",
           "date": "2026-08-15",
           "localizedDescription": "Fixes games hanging at a full loading bar when a config file mixes numbers and text on one line — Peggle loads all the way now — and makes typing work in games' text fields, so Peggle's profile screen accepts a name.",
-          "downloadURL": "https://github.com/johnny901901901/Applesauce/releases/download/ios-v0.4.1/Applesauce-iOS-unsigned.ipa",
+          "downloadURL": "https://github.com/0xjohnnydev/Applesauce/releases/download/ios-v0.4.1/Applesauce-iOS-unsigned.ipa",
           "size": 41665463,
           "sha256": "99877352ba5166fd7a53de1209b6324ec4d24d5c23b76ae57b4163df24334c3b",
           "minOSVersion": "15.0"
