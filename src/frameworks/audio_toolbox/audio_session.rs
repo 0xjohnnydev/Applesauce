@@ -204,7 +204,7 @@ pub fn AudioSessionGetProperty(
             );
         }
         kAudioSessionProperty_CurrentHardwareInputNumberChannels => {
-            env.mem.write(out_data.cast::<u32>(), 0);
+            env.mem.write(out_data.cast::<u32>(), 1);
         }
         kAudioSessionProperty_CurrentHardwareOutputNumberChannels => {
             env.mem.write(
@@ -219,8 +219,8 @@ pub fn AudioSessionGetProperty(
             );
         }
         kAudioSessionProperty_AudioInputAvailable => {
-            // touchHLE currently does not emulate microphone input.
-            let value: u32 = 0;
+            // Microphone input is available through AudioQueueNewInput.
+            let value: u32 = 1;
             env.mem.write(out_data.cast(), value);
         }
         kAudioSessionProperty_CurrentHardwareIOBufferDuration => {
@@ -236,7 +236,7 @@ pub fn AudioSessionGetProperty(
             );
         }
         kAudioSessionProperty_AudioInputAvailable => {
-            env.mem.write(out_data.cast::<u32>(), 0);
+            env.mem.write(out_data.cast::<u32>(), 1);
         }
         kAudioSessionProperty_AudioRoute => {
             env.mem.write(out_data.cast::<u32>(), 0);

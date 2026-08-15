@@ -19,7 +19,7 @@ use crate::frameworks::core_audio_types::{
     debug_fourcc, fourcc, kAudioFormatAppleIMA4, kAudioFormatFlagIsBigEndian,
     kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked,
     kAudioFormatLinearPCM, kAudioFormatMPEG4AAC, kAudioFormatMPEGLayer3,
-    AudioStreamBasicDescription,
+    AudioStreamBasicDescription, AudioTimeStamp, SMPTETime,
 };
 use crate::frameworks::core_foundation::cf_run_loop::{
     kCFRunLoopCommonModes, CFRunLoopGetMain, CFRunLoopMode, CFRunLoopRef,
@@ -77,6 +77,20 @@ struct AudioQueueHostObject {
     is_running_handler: bool,
     is_input: bool,
     input_delay: u32,
+    /// Input queues only: SDL capture device delivering microphone audio.
+    /// SDL is used rather than OpenAL because its CoreAudio backend manages
+    /// the iOS audio session (switching the category to allow recording and
+    /// triggering the permission prompt). `None` while the queue isn't
+    /// started, or when no capture device could be opened (no microphone /
+    /// no permission) — in that case the queue produces paced silence so the
+    /// app's recording logic still gets its callbacks.
+    capture_device: Option<sdl2_sys::SDL_AudioDeviceID>,
+    /// Input queues only: when the current recording started, for pacing the
+    /// silence fallback.
+    input_start_time: Option<std::time::Instant>,
+    /// Input queues only: total frames delivered to the app since start,
+    /// which is also the sample time of the next buffer.
+    input_frames_consumed: u64,
     /// Stored `kAudioQueueProperty_HardwareCodecPolicy` value. Defaults to
     /// `kAudioQueueHardwareCodecPolicy_Default` (0). touchHLE has no hardware
     /// codecs, so this is informational only.
@@ -240,6 +254,9 @@ pub fn AudioQueueNewOutput(
         is_running_handler: false,
         is_input: false,
         input_delay: 0,
+        capture_device: None,
+        input_start_time: None,
+        input_frames_consumed: 0,
         hardware_codec_policy: codec_policy::DEFAULT,
         offline_render_format: None,
     };
@@ -659,6 +676,13 @@ fn AudioQueueGetProperty(
         }
         kAudioQueueProperty_MagicCookie => {
             log_dbg!("AudioQueueGetProperty: kAudioQueueProperty_MagicCookie requested, returning empty.");
+        }
+        kAudioQueueProperty_StreamDescription => {
+            // The format the queue was created with (we never renegotiate
+            // it). SpeakHere-derived recording code (e.g. Talking Tom) reads
+            // this right after AudioQueueNewInput and throws on error.
+            env.mem
+                .write(out_property_data.cast(), host_object.format);
         }
         kAudioQueueProperty_MaximumOutputPacketSize => {
             // Return the bytes_per_packet from the queue's stream format.
@@ -1217,6 +1241,12 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         return;
     };
 
+    if host_object.is_input {
+        // Input queues capture from the microphone; there is no OpenAL
+        // source to prime.
+        return;
+    }
+
     if !is_supported_audio_format(&host_object.format) {
         return;
     }
@@ -1359,7 +1389,149 @@ fn unqueue_buffers<F: FnMut(ALuint)>(al_source: ALuint, context: &OpenAL<'_>, mu
     }
 }
 
+/// Deliver captured microphone audio (or paced silence when no capture device
+/// is available) to an input queue's enqueued buffers, calling the app's
+/// input callback for each buffer filled.
+fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
+    let state = State::get(&mut env.framework_state);
+    let Some(host_object) = state.audio_queues.get_mut(&in_aq) else {
+        return;
+    };
+    if host_object.is_running != AudioQueueIsRunning::Running || host_object.is_running_handler {
+        return;
+    }
+    let format = host_object.format;
+    let bytes_per_frame = format.bytes_per_frame;
+    if bytes_per_frame == 0 {
+        return;
+    }
+
+    let capture_device = host_object.capture_device;
+    let mut available_frames: u64 = match capture_device {
+        Some(device) => {
+            let bytes = unsafe { sdl2_sys::SDL_GetQueuedAudioSize(device) };
+            (bytes / bytes_per_frame) as u64
+        }
+        None => {
+            // Silence fallback: pretend frames arrive in real time.
+            let consumed = host_object.input_frames_consumed;
+            let start = host_object
+                .input_start_time
+                .get_or_insert_with(std::time::Instant::now);
+            let total = (start.elapsed().as_secs_f64() * format.sample_rate) as u64;
+            total.saturating_sub(consumed)
+        }
+    };
+
+    host_object.is_running_handler = true;
+
+    // Fill as many whole buffers as we have captured frames for. Partial
+    // buffers are held back, like the real Audio Queue Services.
+    let mut filled: Vec<(AudioQueueBufferRef, u64)> = Vec::new();
+    while let Some(&buffer_ref) = host_object.buffer_queue.front() {
+        let mut buffer = env.mem.read(buffer_ref);
+        let frames_wanted = (buffer.audio_data_bytes_capacity / bytes_per_frame) as u64;
+        if frames_wanted == 0 || available_frames < frames_wanted {
+            break;
+        }
+        let byte_size: u32 = frames_wanted as u32 * bytes_per_frame;
+
+        if let Some(device) = capture_device {
+            let mut samples = vec![0u8; byte_size as usize];
+            let got = unsafe {
+                sdl2_sys::SDL_DequeueAudio(device, samples.as_mut_ptr().cast(), byte_size)
+            };
+            if got < byte_size {
+                // Shouldn't happen (availability was checked above), but
+                // never hand the app uninitialized bytes.
+                samples[got as usize..].fill(0);
+            }
+            env.mem
+                .bytes_at_mut(buffer.audio_data.cast(), byte_size)
+                .copy_from_slice(&samples);
+        } else {
+            env.mem
+                .bytes_at_mut(buffer.audio_data.cast(), byte_size)
+                .fill(0);
+        }
+
+        buffer.audio_data_byte_size = byte_size;
+        env.mem.write(buffer_ref, buffer);
+
+        host_object.buffer_queue.pop_front();
+        let start_frame = host_object.input_frames_consumed;
+        host_object.input_frames_consumed += frames_wanted;
+        available_frames -= frames_wanted;
+        filled.push((buffer_ref, start_frame));
+    }
+
+    let callback_proc = host_object.callback_proc;
+    let callback_user_data = host_object.callback_user_data;
+
+    for (buffer_ref, start_frame) in filled {
+        let timestamp = AudioTimeStamp {
+            sample_time: start_frame as f64,
+            host_time: 0,
+            rate_scalar: 0.0,
+            world_clock_type: 0,
+            SMPTE_time: SMPTETime {
+                subframes: 0,
+                subframe_divisor: 0,
+                counter: 0,
+                type_: 0,
+                flags: 0,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+                frames: 0,
+            },
+            flags: kAudioTimeStampSampleTimeValid,
+            _reserved: 0,
+        };
+        let timestamp_ptr = env.mem.alloc_and_write(timestamp);
+        // For linear PCM, no packet descriptions are passed.
+        let () = callback_proc.call_from_host(
+            env,
+            (
+                callback_user_data,
+                in_aq,
+                buffer_ref,
+                timestamp_ptr.cast_const(),
+                0u32,
+                MutVoidPtr::null(),
+            ),
+        );
+        env.mem.free(timestamp_ptr.cast());
+
+        // The callback is allowed to dispose the queue.
+        if State::get(&mut env.framework_state)
+            .audio_queues
+            .get(&in_aq)
+            .is_none()
+        {
+            return;
+        }
+    }
+
+    if let Some(host_object) = State::get(&mut env.framework_state)
+        .audio_queues
+        .get_mut(&in_aq)
+    {
+        host_object.is_running_handler = false;
+    }
+}
+
 pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
+    if let Some(host_object) = State::get(&mut env.framework_state)
+        .audio_queues
+        .get(&in_aq)
+    {
+        if host_object.is_input {
+            handle_input_audio_queue(env, in_aq);
+            return;
+        }
+    }
+
     let (state, context) =
         State::get_with_context(&mut env.framework_state, &mut env.openal_manager);
 
@@ -1539,12 +1711,95 @@ fn notify_aq_is_running(env: &mut Environment, in_aq: AudioQueueRef) {
     }
 }
 
+/// Start capturing for an input queue: open an SDL capture device matching
+/// the recording format and unpause it. If no device can be opened (no
+/// microphone, no permission, unsupported format), the queue still runs and
+/// delivers paced silence so the app's recording logic keeps working.
+fn start_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus {
+    let state = State::get(&mut env.framework_state);
+    let Some(host_object) = state.audio_queues.get_mut(&in_aq) else {
+        return kAudioQueueErr_InvalidProperty;
+    };
+
+    if host_object.capture_device.is_none() && input_format_is_supported(&host_object.format) {
+        unsafe {
+            // The emulator only initializes SDL's video/event subsystems
+            // (audio output goes through OpenAL), so bring up audio here.
+            if sdl2_sys::SDL_WasInit(sdl2_sys::SDL_INIT_AUDIO) == 0
+                && sdl2_sys::SDL_InitSubSystem(sdl2_sys::SDL_INIT_AUDIO) != 0
+            {
+                log!(
+                    "Warning: AudioQueueStart({:?}): could not initialize SDL \
+                     audio; the input queue will record silence.",
+                    in_aq
+                );
+            } else {
+                let desired = sdl2_sys::SDL_AudioSpec {
+                    freq: host_object.format.sample_rate as i32,
+                    format: sdl2_sys::AUDIO_S16LSB as sdl2_sys::SDL_AudioFormat,
+                    channels: host_object.format.channels_per_frame as u8,
+                    silence: 0,
+                    samples: 1024,
+                    padding: 0,
+                    size: 0,
+                    callback: None,
+                    userdata: std::ptr::null_mut(),
+                };
+                let mut obtained = desired;
+                // allowed_changes of 0 makes SDL convert whatever the
+                // hardware delivers into exactly the requested format.
+                let device = sdl2_sys::SDL_OpenAudioDevice(
+                    std::ptr::null(),
+                    1, // iscapture
+                    &desired,
+                    &mut obtained,
+                    0,
+                );
+                if device == 0 {
+                    log!(
+                        "Warning: AudioQueueStart({:?}): could not open a \
+                         capture device (no microphone or no permission?); \
+                         the input queue will record silence.",
+                        in_aq
+                    );
+                } else {
+                    host_object.capture_device = Some(device);
+                }
+            }
+        }
+    }
+
+    if let Some(device) = host_object.capture_device {
+        unsafe {
+            sdl2_sys::SDL_ClearQueuedAudio(device);
+            sdl2_sys::SDL_PauseAudioDevice(device, 0);
+        }
+    }
+
+    host_object.is_running = AudioQueueIsRunning::Running;
+    host_object.input_start_time = Some(std::time::Instant::now());
+    host_object.input_frames_consumed = 0;
+
+    notify_aq_is_running(env, in_aq);
+
+    0 // success
+}
+
 pub fn AudioQueueStart(
     env: &mut Environment,
     in_aq: AudioQueueRef,
     _in_device_start_time: ConstVoidPtr,
 ) -> OSStatus {
     return_if_null!(in_aq);
+
+    if let Some(host_object) = State::get(&mut env.framework_state)
+        .audio_queues
+        .get(&in_aq)
+    {
+        if host_object.is_input {
+            return start_input_audio_queue(env, in_aq);
+        }
+    }
 
     prime_audio_queue(env, in_aq);
 
@@ -1601,6 +1856,10 @@ pub fn AudioQueuePause(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus 
 
     host_object.is_running = AudioQueueIsRunning::Stopped;
 
+    if let Some(device) = host_object.capture_device {
+        unsafe { sdl2_sys::SDL_PauseAudioDevice(device, 1) };
+    }
+
     if let Some(al_source) = host_object.al_source {
         unsafe { context.SourcePause(al_source) };
         assert!(unsafe { context.GetError() } == 0);
@@ -1623,6 +1882,21 @@ fn finish_stopping_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
 
 pub fn AudioQueueStop(env: &mut Environment, in_aq: AudioQueueRef, in_immediate: bool) -> OSStatus {
     return_if_null!(in_aq);
+
+    // Input queues have no OpenAL source to drain, so an asynchronous stop
+    // can complete right away: stop capturing and finish.
+    if let Some(host_object) = State::get(&mut env.framework_state)
+        .audio_queues
+        .get_mut(&in_aq)
+    {
+        if host_object.is_input {
+            if let Some(device) = host_object.capture_device {
+                unsafe { sdl2_sys::SDL_PauseAudioDevice(device, 1) };
+            }
+            finish_stopping_audio_queue(env, in_aq);
+            return 0;
+        }
+    }
 
     if in_immediate {
         log_dbg!("Performing immediate AudioQueueStop for {:?}.", in_aq);
@@ -1756,6 +2030,10 @@ pub fn AudioQueueDispose(
     };
     log_dbg!("Disposing of audio queue {:?}", in_aq);
 
+    if let Some(device) = host_object.capture_device.take() {
+        unsafe { sdl2_sys::SDL_CloseAudioDevice(device) };
+    }
+
     env.mem.free(in_aq.cast());
 
     for buffer_ptr in host_object.buffers {
@@ -1808,18 +2086,34 @@ pub fn AudioQueueDispose(
     0 // success
 }
 
+/// `(*void)(void *in_user_data, AudioQueueRef in_aq, AudioQueueBufferRef
+/// in_buffer, const AudioTimeStamp *in_start_time, UInt32 in_num_packets,
+/// const AudioStreamPacketDescription *in_packet_descs)`
+pub type AudioQueueInputCallback = GuestFunction;
+
+/// `kAudioTimeStampSampleTimeValid` from `CoreAudioTypes.h`.
+const kAudioTimeStampSampleTimeValid: u32 = 1 << 0;
+
+/// Whether a queue's recording format is one we can capture natively
+/// (16-bit little-endian integer linear PCM, mono or stereo).
+fn input_format_is_supported(format: &AudioStreamBasicDescription) -> bool {
+    format.format_id == kAudioFormatLinearPCM
+        && (format.format_flags & (kAudioFormatFlagIsFloat | kAudioFormatFlagIsBigEndian)) == 0
+        && format.bits_per_channel == 16
+        && format.bytes_per_frame == 2 * format.channels_per_frame
+        && (format.channels_per_frame == 1 || format.channels_per_frame == 2)
+}
+
 pub fn AudioQueueNewInput(
     env: &mut Environment,
     in_format: ConstPtr<AudioStreamBasicDescription>,
-    in_callback_proc: AudioQueueOutputCallback,
+    in_callback_proc: AudioQueueInputCallback,
     in_user_data: MutVoidPtr,
     in_callback_run_loop: CFRunLoopRef,
     _in_callback_run_loop_mode: CFRunLoopMode,
     in_flags: u32,
     out_aq: MutPtr<AudioQueueRef>,
 ) -> OSStatus {
-    log!("TODO: AudioQueueNewInput(...) stubbed");
-
     assert!(in_flags == 0);
 
     let in_callback_run_loop = if in_callback_run_loop.is_null() {
@@ -1845,8 +2139,11 @@ pub fn AudioQueueNewInput(
         aq_is_running_proc: None,
         aq_is_running_user_data: None,
         is_running_handler: false,
-        is_input: false,
+        is_input: true,
         input_delay: 0,
+        capture_device: None,
+        input_start_time: None,
+        input_frames_consumed: 0,
         hardware_codec_policy: codec_policy::DEFAULT,
         offline_render_format: None,
     };
@@ -1861,6 +2158,21 @@ pub fn AudioQueueNewInput(
     }
 
     ns_run_loop::add_audio_queue(env, in_callback_run_loop, aq_ref);
+
+    if !input_format_is_supported(&format) {
+        log!(
+            "Warning: AudioQueueNewInput() for format {:#?}: only 16-bit \
+             integer linear PCM can be captured; this queue will record \
+             silence.",
+            format
+        );
+    }
+
+    log_dbg!(
+        "AudioQueueNewInput() for format {:#?}, new audio queue handle: {:?}",
+        format,
+        aq_ref,
+    );
 
     0
 }
