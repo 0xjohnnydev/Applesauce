@@ -22,6 +22,16 @@
       ],
       "versions": [
         {
+          "version": "0.4.2",
+          "buildVersion": "1",
+          "date": "2026-08-15",
+          "localizedDescription": "Brings up the on-screen keyboard on games' name-entry screens (The Sims Medieval, Peggle, Blokus, Spore), lets talking-character apps like Talking Tom use the microphone, and stops games built on Google's protobuf runtime (such as Blade Dash) from crashing on launch. Also fixes Talking Tom freezing after a couple of taps and a crash on apps that ship UTF-16 text files.",
+          "downloadURL": "https://github.com/0xjohnnydev/Applesauce/releases/download/ios-v0.4.2/Applesauce-iOS-unsigned.ipa",
+          "size": 41666853,
+          "sha256": "302dce0ac70459cb90ad9677c9a01ae703dceb474371d670383661e3e60a50f5",
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.4.1",
           "buildVersion": "1",
           "date": "2026-08-15",
@@ -46,7 +56,9 @@
         "entitlements": [
           "get-task-allow"
         ],
-        "privacy": {}
+        "privacy": {
+          "NSMicrophoneUsageDescription": "Some games record from the microphone, like talking-character apps that repeat what you say."
+        }
       }
     },
     {
