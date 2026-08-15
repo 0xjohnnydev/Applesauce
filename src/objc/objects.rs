@@ -179,6 +179,18 @@ impl super::ObjC {
         host_object: Box<dyn AnyHostObject>,
         mem: &mut Mem,
     ) -> id {
+        self.alloc_object_with_extra_bytes(isa, 0, host_object, mem)
+    }
+
+    /// [Self::alloc_object], but with `extra_bytes` of zeroed indexed storage
+    /// after the instance's ivars, as `NSAllocateObject` provides.
+    pub fn alloc_object_with_extra_bytes(
+        &mut self,
+        isa: Class,
+        extra_bytes: GuestUSize,
+        host_object: Box<dyn AnyHostObject>,
+        mem: &mut Mem,
+    ) -> id {
         let instance_size = self
             .get_host_object(isa)
             .and_then(|h| h.as_any().downcast_ref::<ClassHostObject>())
@@ -187,7 +199,7 @@ impl super::ObjC {
 
         self.alloc_object_inner(
             isa,
-            instance_size,
+            instance_size.checked_add(extra_bytes).unwrap(),
             host_object,
             mem,
             Some(NonZeroU32::new(1).unwrap()),

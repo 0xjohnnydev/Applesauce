@@ -116,11 +116,22 @@ fn ensure_class_initialized(env: &mut Environment, class_to_init: Class) {
 /// We are relying on CallFromGuest not
 /// overwriting it.
 #[allow(non_snake_case)]
+/// How a super-call begins its method lookup. `objc_msgSendSuper2` receives
+/// the *current* class and must start lookup at its superclass, while the
+/// older `objc_msgSendSuper` receives the class to start lookup at directly.
+#[derive(Copy, Clone)]
+enum SuperDispatch {
+    /// `objc_msgSendSuper2`: skip the given class, start at its superclass.
+    SkipClass(Class),
+    /// `objc_msgSendSuper`: start lookup at the given class itself.
+    StartAtClass(Class),
+}
+
 fn objc_msgSend_inner(
     env: &mut Environment,
     receiver: id,
     selector: SEL,
-    super2: Option<Class>,
+    super2: Option<SuperDispatch>,
     tolerate_type_mismatch: bool,
     skip_initialize: bool,
 ) {
@@ -139,12 +150,15 @@ fn objc_msgSend_inner(
     // `Environment`, since `objc_msgSend_inner` is the single chokepoint
     // through which every dispatch (host or guest) must pass.
     //
-    // 128 is a deliberate compromise: real iOS view hierarchies rarely go
-    // deeper than ~50 nested `nextResponder`/`hitTest:` levels, and a small
-    // limit keeps us well clear of Android's 1 MB default thread stack
-    // (each `objc_msgSend_inner` host frame is several KB once Rust adds
-    // local variables, log!() temporaries, and the dispatch trampoline).
-    const MAX_DEPTH: usize = 128;
+    // Each nested dispatch costs ~16 KiB of host stack (measured in a debug
+    // build), so the limit must fit in the coroutine stack with headroom —
+    // see HOST_STACK_SIZE in environment.rs (8 MiB, so 256 × 16 KiB uses at
+    // most half of it). The limit also can't be too small: legitimate deep
+    // nesting exists, e.g. Google Tag Manager's protobuf classes chain
+    // `+initialize` → `[Next descriptor]` across well over 128 classes at
+    // startup (Blade Dash), and bailing out mid-chain poisons their
+    // descriptors with nils.
+    const MAX_DEPTH: usize = 256;
     thread_local! {
         static DISPATCH_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
@@ -211,7 +225,10 @@ fn objc_msgSend_inner(
         return;
     }
 
-    let orig_class = super2.unwrap_or_else(|| ObjC::read_isa(receiver, &env.mem));
+    let orig_class = match super2 {
+        Some(SuperDispatch::SkipClass(class)) | Some(SuperDispatch::StartAtClass(class)) => class,
+        None => ObjC::read_isa(receiver, &env.mem),
+    };
     // Graceful exit if isa is nil — this typically means the object was
     // already deallocated (use-after-free in guest code) or was never
     // properly allocated. Per Apple's Objective-C runtime behavior,
@@ -548,9 +565,10 @@ fn objc_msgSend_inner(
             ..
         }) = host_object.as_any().downcast_ref()
         {
-            // Skip method lookup on first iteration if this is the super-call
-            // variant of objc_msgSend (look up the superclass first)
-            if super2.is_some() && class == orig_class {
+            // Skip method lookup on first iteration if this is the
+            // `objc_msgSendSuper2` variant (look up the superclass first).
+            // The plain `objc_msgSendSuper` variant starts at orig_class.
+            if matches!(super2, Some(SuperDispatch::SkipClass(_))) && class == orig_class {
                 class = superclass;
                 continue;
             }
@@ -2139,7 +2157,7 @@ pub(super) fn objc_msgSendSuper2(
         env,
         receiver,
         selector,
-        /* super2: */ Some(class),
+        /* super2: */ Some(SuperDispatch::SkipClass(class)),
         /* tolerate_type_mismatch: */ false,
         /* skip_initialize: */ false,
     )
@@ -2158,7 +2176,52 @@ pub(super) fn objc_msgSendSuper2_stret(
         env,
         receiver,
         selector,
-        /* super2: */ Some(class),
+        /* super2: */ Some(SuperDispatch::SkipClass(class)),
+        /* tolerate_type_mismatch: */ false,
+        /* skip_initialize: */ false,
+    )
+}
+
+/// The older, non-`2` variant of the super-call: `objc_super.class` is the
+/// class to start method lookup at (the caller already resolved the
+/// superclass), not the current class. Apps compiled with old toolchains
+/// (e.g. Blade Dash) call `[super foo]` through a non-lazy pointer to this
+/// symbol; treating it like the `2` variant would skip one level of the
+/// hierarchy, and leaving it unbound turns every super-call into infinite
+/// recursion on `self`.
+#[allow(non_snake_case)]
+pub(super) fn objc_msgSendSuper(
+    env: &mut Environment,
+    super_ptr: ConstPtr<objc_super>,
+    selector: SEL,
+) {
+    let objc_super { receiver, class } = env.mem.read(super_ptr);
+    // Rewrite first argument to match the normal ABI.
+    crate::abi::write_next_arg(&mut 0, env.cpu.regs_mut(), &mut env.mem, receiver);
+    objc_msgSend_inner(
+        env,
+        receiver,
+        selector,
+        /* super2: */ Some(SuperDispatch::StartAtClass(class)),
+        /* tolerate_type_mismatch: */ false,
+        /* skip_initialize: */ false,
+    )
+}
+
+#[allow(non_snake_case)]
+pub(super) fn objc_msgSendSuper_stret(
+    env: &mut Environment,
+    super_ptr: ConstPtr<objc_super>,
+    selector: SEL,
+) {
+    let objc_super { receiver, class } = env.mem.read(super_ptr);
+    // Rewrite first argument to match the normal ABI.
+    crate::abi::write_next_arg(&mut 0, env.cpu.regs_mut(), &mut env.mem, receiver);
+    objc_msgSend_inner(
+        env,
+        receiver,
+        selector,
+        /* super2: */ Some(SuperDispatch::StartAtClass(class)),
         /* tolerate_type_mismatch: */ false,
         /* skip_initialize: */ false,
     )

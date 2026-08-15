@@ -897,25 +897,16 @@ impl Dyld {
                 // an `objc_super` struct where the `class` field points directly
                 // to the *superclass* to start method lookup from (unlike
                 // `objc_msgSendSuper2` where it's the *current* class and the
-                // runtime dereferences to the super).
+                // runtime dereferences to the super). Apps compiled with old
+                // toolchains (FlyCraft, GameStop, Blade Dash) have non-lazy
+                // relocations to these symbols and call every `[super foo]`
+                // through them.
                 //
-                // Some apps (FlyCraft, GameStop) have non-lazy relocations to
-                // these symbols from WebKit/SDK stubs compiled with older
-                // toolchains.  We resolve them to `objc_msgSendSuper2` /
-                // `objc_msgSendSuper2_stret` respectively because:
-                //   1. The runtime always finds the method by walking up from
-                //      the given class — whether we start from superclass or
-                //      from (class whose super we look up) the result is
-                //      identical in practice for apps.
-                //   2. All touchHLE-implemented classes use the `2` variant
-                //      internally anyway.
-                //
-                // Create a trampoline that calls our existing host
-                // implementation of the `2` variant.
+                // Create a trampoline that calls our host implementation.
                 let target_name = if name == "_objc_msgSendSuper" {
-                    "_objc_msgSendSuper2"
+                    "_objc_msgSendSuper"
                 } else {
-                    "_objc_msgSendSuper2_stret"
+                    "_objc_msgSendSuper_stret"
                 };
                 if let Some((sym, _)) =
                     search_host_dylibs(|dylib| dylib.function_exports, target_name)

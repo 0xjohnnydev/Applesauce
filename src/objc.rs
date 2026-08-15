@@ -69,8 +69,8 @@ use crate::objc::classes::{objc_msgForward, objc_msgForward_stret};
 use crate::Environment;
 use classes::{ClassHostObject, FakeClass, UnimplementedClass};
 use messages::{
-    objc_msgSendSuper2, objc_msgSendSuper2_stret, objc_msgSend_stret, MsgSendSignature,
-    MsgSendSuperSignature,
+    objc_msgSendSuper, objc_msgSendSuper2, objc_msgSendSuper2_stret, objc_msgSendSuper_stret,
+    objc_msgSend_stret, MsgSendSignature, MsgSendSuperSignature,
 };
 use methods::method_list_t;
 use objects::{objc_object, HostObjectEntry};
@@ -373,6 +373,8 @@ const FUNCTIONS: FunctionExports = &[
     export_c_func!(objc_msgSend_stret(_, _, _)),
     export_c_func!(objc_msgSendSuper2_stret(_, _)),
     export_c_func!(objc_msgSendSuper2(_, _)),
+    export_c_func!(objc_msgSendSuper_stret(_, _)),
+    export_c_func!(objc_msgSendSuper(_, _)),
     export_c_func!(objc_getProperty(_, _, _, _)),
     export_c_func!(objc_setProperty(_, _, _, _, _, _)),
     export_c_func!(objc_setProperty_nonatomic_copy(_, _, _, _)),
