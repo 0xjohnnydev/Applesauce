@@ -1427,7 +1427,7 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
 
     // Fill as many whole buffers as we have captured frames for. Partial
     // buffers are held back, like the real Audio Queue Services.
-    let mut filled: Vec<(AudioQueueBufferRef, u64)> = Vec::new();
+    let mut filled: Vec<(AudioQueueBufferRef, u64, u32)> = Vec::new();
     while let Some(&buffer_ref) = host_object.buffer_queue.front() {
         let mut buffer = env.mem.read(buffer_ref);
         let frames_wanted = (buffer.audio_data_bytes_capacity / bytes_per_frame) as u64;
@@ -1462,13 +1462,13 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         let start_frame = host_object.input_frames_consumed;
         host_object.input_frames_consumed += frames_wanted;
         available_frames -= frames_wanted;
-        filled.push((buffer_ref, start_frame));
+        filled.push((buffer_ref, start_frame, frames_wanted as u32));
     }
 
     let callback_proc = host_object.callback_proc;
     let callback_user_data = host_object.callback_user_data;
 
-    for (buffer_ref, start_frame) in filled {
+    for (buffer_ref, start_frame, num_packets) in filled {
         let timestamp = AudioTimeStamp {
             sample_time: start_frame as f64,
             host_time: 0,
@@ -1489,7 +1489,10 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             _reserved: 0,
         };
         let timestamp_ptr = env.mem.alloc_and_write(timestamp);
-        // For linear PCM, no packet descriptions are passed.
+        // Linear PCM needs no packet descriptions, but the packet count must
+        // still be the number of packets (frames) delivered — real Core
+        // Audio passes it, and e.g. Talking Tom's recorder treats a zero
+        // count as "no data" and never processes the buffer.
         let () = callback_proc.call_from_host(
             env,
             (
@@ -1497,7 +1500,7 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
                 in_aq,
                 buffer_ref,
                 timestamp_ptr.cast_const(),
-                0u32,
+                num_packets,
                 MutVoidPtr::null(),
             ),
         );
