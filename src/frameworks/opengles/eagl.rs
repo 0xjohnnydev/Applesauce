@@ -902,16 +902,21 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (
     // state changes we make.
     let old_framebuffer: GLuint = get_int(gles, gles11::FRAMEBUFFER_BINDING_OES) as _;
 
-    // Create a framebuffer we can use to read from the renderbuffer
+    // Use the app's current framebuffer when it has one. Switching away from
+    // that framebuffer before the read can discard unresolved tile data on
+    // mobile GPUs, which makes the slow composition path read a black frame.
     let mut src_framebuffer = 0;
-    gles.GenFramebuffersOES(1, &mut src_framebuffer);
-    gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
-    gles.FramebufferRenderbufferOES(
-        gles11::FRAMEBUFFER_OES,
-        gles11::COLOR_ATTACHMENT0_OES,
-        gles11::RENDERBUFFER_OES,
-        renderbuffer,
-    );
+    let used_app_framebuffer = old_framebuffer != 0;
+    if !used_app_framebuffer {
+        gles.GenFramebuffersOES(1, &mut src_framebuffer);
+        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
+        gles.FramebufferRenderbufferOES(
+            gles11::FRAMEBUFFER_OES,
+            gles11::COLOR_ATTACHMENT0_OES,
+            gles11::RENDERBUFFER_OES,
+            renderbuffer,
+        );
+    }
 
     // On tile-based GPUs (Mali, Adreno, PowerVR) the per-tile color buffer
     // isn't guaranteed to be resolved to the renderbuffer's main memory
@@ -947,8 +952,10 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (
     );
     pixel_buffer.set_len(size);
 
-    // Clean up the framebuffer object since we no longer need it.
-    gles.DeleteFramebuffersOES(1, &src_framebuffer);
+    // Clean up only the fallback framebuffer that we created.
+    if !used_app_framebuffer {
+        gles.DeleteFramebuffersOES(1, &src_framebuffer);
+    }
 
     // Restore the framebuffer binding
     gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, old_framebuffer);

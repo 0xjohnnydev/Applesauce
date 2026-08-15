@@ -18,5 +18,5 @@
 	url = https://github.com/GNOME/libxml2.git
 [submodule "vendor/rust-sdl2"]
 	path = vendor/rust-sdl2
-	url = https://github.com/johnny901901901/rust-sdl2.git
+	url = https://github.com/0xjohnnydev/rust-sdl2.git
 	branch = touchhle-ios-host
