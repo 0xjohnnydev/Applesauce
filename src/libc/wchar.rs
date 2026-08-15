@@ -487,34 +487,84 @@ fn wcstombs(
     i
 }
 
-/// wcstol — wide string to long.
+/// Digit value of a wide char under `base`, if valid.
+fn wc_digit_val(wc: wchar_t, base: i32) -> Option<i32> {
+    let v = match wc {
+        0x30..=0x39 => wc - 0x30,      // '0'-'9'
+        0x41..=0x5A => wc - 0x41 + 10, // 'A'-'Z'
+        0x61..=0x7A => wc - 0x61 + 10, // 'a'-'z'
+        _ => return None,
+    };
+    (v < base).then_some(v)
+}
+
+/// Longest-valid-prefix integer scan with C `wcstol` semantics: skip leading
+/// whitespace, optional sign, optional 0x/0 prefix (base 16/0), then as many
+/// digits as are valid for the base. Values out of `i32` range are clamped
+/// like C clamps to LONG_MIN/LONG_MAX. Returns the value and the number of
+/// code units consumed; 0 consumed means no conversion was performed (C then
+/// sets `*endptr` to the original pointer, not past the whitespace/sign).
+fn wcs_scan_long(read: impl Fn(GuestUSize) -> wchar_t, mut base: i32) -> (i32, GuestUSize) {
+    if base != 0 && !(2..=36).contains(&base) {
+        return (0, 0);
+    }
+    let mut i: GuestUSize = 0;
+    while matches!(read(i), 0x09..=0x0D | 0x20) {
+        i += 1;
+    }
+    let neg = match read(i) {
+        0x2B => {
+            i += 1;
+            false
+        }
+        0x2D => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+    if (base == 0 || base == 16) && read(i) == 0x30 {
+        let x = read(i + 1);
+        if (x == 0x78 || x == 0x58) && wc_digit_val(read(i + 2), 16).is_some() {
+            base = 16;
+            i += 2;
+        } else if base == 0 {
+            base = 8;
+        }
+    }
+    if base == 0 {
+        base = 10;
+    }
+    // Accumulate with saturation so arbitrarily long digit runs can't wrap.
+    let mut value: i64 = 0;
+    let mut any_digits = false;
+    while let Some(d) = wc_digit_val(read(i), base) {
+        any_digits = true;
+        i += 1;
+        value = value
+            .saturating_mul(base.into())
+            .saturating_add(d.into())
+            .min(i64::from(i32::MAX) + 1);
+    }
+    if !any_digits {
+        return (0, 0);
+    }
+    let value = if neg { -value } else { value };
+    (value.clamp(i32::MIN.into(), i32::MAX.into()) as i32, i)
+}
+
+/// wcstol — wide string to long. Parses the longest valid leading number and
+/// ignores anything after it, like C. (Parsing the whole string instead makes
+/// games mis-read config values that have text after the number.)
 fn wcstol(
     env: &mut Environment,
     s: ConstPtr<wchar_t>,
     endptr: MutPtr<MutPtr<wchar_t>>,
     base: i32,
 ) -> i32 {
-    // Convert to a narrow string then parse.
-    let mut buf = String::new();
-    let mut i: GuestUSize = 0;
-    loop {
-        let wc = env.mem.read(s + i);
-        if wc == 0 || wc > 0x7F {
-            break;
-        }
-        buf.push(wc as u8 as char);
-        i += 1;
-    }
-    let buf = buf.trim();
-    let result = if base == 0 || base == 10 {
-        buf.parse::<i32>().unwrap_or(0)
-    } else if base == 16 {
-        i32::from_str_radix(buf.trim_start_matches("0x"), 16).unwrap_or(0)
-    } else {
-        i32::from_str_radix(buf, base as u32).unwrap_or(0)
-    };
+    let (result, consumed) = wcs_scan_long(|i| env.mem.read(s + i), base);
     if !endptr.is_null() {
-        env.mem.write(endptr, (s + i).cast_mut());
+        env.mem.write(endptr, (s + consumed).cast_mut());
     }
     result
 }
@@ -529,22 +579,67 @@ fn wcstoul(
     wcstol(env, s, endptr, base) as u32
 }
 
-/// wcstod — wide string to double.
-fn wcstod(env: &mut Environment, s: ConstPtr<wchar_t>, endptr: MutPtr<MutPtr<wchar_t>>) -> f64 {
-    let mut buf = String::new();
+/// Longest-valid-prefix float scan with C `wcstod` semantics: skip leading
+/// whitespace, optional sign, digits with optional decimal point, optional
+/// exponent (only if it has at least one digit). Returns the value and code
+/// units consumed; 0 consumed means no conversion was performed.
+fn wcs_scan_double(read: impl Fn(GuestUSize) -> wchar_t) -> (f64, GuestUSize) {
     let mut i: GuestUSize = 0;
-    loop {
-        let wc = env.mem.read(s + i);
-        if wc == 0 || wc > 0x7F {
-            break;
-        }
-        buf.push(wc as u8 as char);
+    while matches!(read(i), 0x09..=0x0D | 0x20) {
         i += 1;
     }
-    if !endptr.is_null() {
-        env.mem.write(endptr, (s + i).cast_mut());
+    let mut buf = String::new();
+    if matches!(read(i), 0x2B | 0x2D) {
+        buf.push(read(i) as u8 as char);
+        i += 1;
     }
-    buf.trim().parse::<f64>().unwrap_or(0.0)
+    let mut any_digits = false;
+    while matches!(read(i), 0x30..=0x39) {
+        buf.push(read(i) as u8 as char);
+        any_digits = true;
+        i += 1;
+    }
+    if read(i) == 0x2E {
+        buf.push('.');
+        i += 1;
+        while matches!(read(i), 0x30..=0x39) {
+            buf.push(read(i) as u8 as char);
+            any_digits = true;
+            i += 1;
+        }
+    }
+    if !any_digits {
+        return (0.0, 0);
+    }
+    if matches!(read(i), 0x45 | 0x65) {
+        // 'E'/'e': only part of the number if at least one digit follows.
+        let mut j = i + 1;
+        if matches!(read(j), 0x2B | 0x2D) {
+            j += 1;
+        }
+        if matches!(read(j), 0x30..=0x39) {
+            buf.push('e');
+            if matches!(read(i + 1), 0x2B | 0x2D) {
+                buf.push(read(i + 1) as u8 as char);
+            }
+            i = j;
+            while matches!(read(i), 0x30..=0x39) {
+                buf.push(read(i) as u8 as char);
+                i += 1;
+            }
+        }
+    }
+    (buf.parse::<f64>().unwrap_or(0.0), i)
+}
+
+/// wcstod — wide string to double. Parses the longest valid leading number
+/// and ignores anything after it, like C.
+fn wcstod(env: &mut Environment, s: ConstPtr<wchar_t>, endptr: MutPtr<MutPtr<wchar_t>>) -> f64 {
+    let (result, consumed) = wcs_scan_double(|i| env.mem.read(s + i));
+    if !endptr.is_null() {
+        env.mem.write(endptr, (s + consumed).cast_mut());
+    }
+    result
 }
 
 /// wcstof — wide string to float.
@@ -772,3 +867,72 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(mbsrtowcs(_, _, _, _)),
     export_c_func!(mbsrtowcs_l(_, _, _, _, _)),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{wcs_scan_double, wcs_scan_long};
+
+    /// NUL-terminated read callback over a &str, like guest memory.
+    fn reader(s: &str) -> impl Fn(u32) -> i32 + '_ {
+        move |i| s.chars().nth(i as usize).map_or(0, |c| c as i32)
+    }
+
+    #[test]
+    fn scan_long_stops_at_trailing_text() {
+        // Peggle's stages.cfg: StringParser::ReadInt points wcstol at the
+        // number with the rest of the line still following it.
+        assert_eq!(
+            wcs_scan_long(reader("1,\"Hit all ORANGE PEGS\""), 10),
+            (1, 1)
+        );
+        assert_eq!(wcs_scan_long(reader("350000"), 10), (350000, 6));
+        assert_eq!(wcs_scan_long(reader("  -42, x"), 10), (-42, 5));
+        assert_eq!(wcs_scan_long(reader("+7)"), 10), (7, 2));
+    }
+
+    #[test]
+    fn scan_long_no_conversion() {
+        // No digits: value 0 and 0 consumed (C sets *endptr = nptr).
+        assert_eq!(wcs_scan_long(reader("hello"), 10), (0, 0));
+        assert_eq!(wcs_scan_long(reader(""), 10), (0, 0));
+        assert_eq!(wcs_scan_long(reader("  -"), 10), (0, 0));
+    }
+
+    #[test]
+    fn scan_long_bases() {
+        assert_eq!(wcs_scan_long(reader("0x1F,"), 16), (0x1F, 4));
+        assert_eq!(wcs_scan_long(reader("0x1F,"), 0), (0x1F, 4));
+        assert_eq!(wcs_scan_long(reader("1F"), 16), (0x1F, 2));
+        assert_eq!(wcs_scan_long(reader("017"), 0), (0o17, 3));
+        assert_eq!(wcs_scan_long(reader("0"), 0), (0, 1));
+        // "0x" with no hex digit: only the "0" is a number.
+        assert_eq!(wcs_scan_long(reader("0xg"), 16), (0, 1));
+    }
+
+    #[test]
+    fn scan_long_clamps_out_of_range() {
+        assert_eq!(wcs_scan_long(reader("99999999999"), 10), (i32::MAX, 11));
+        assert_eq!(wcs_scan_long(reader("-99999999999"), 10), (i32::MIN, 12));
+        assert_eq!(wcs_scan_long(reader("2147483647"), 10), (i32::MAX, 10));
+        assert_eq!(wcs_scan_long(reader("-2147483648"), 10), (i32::MIN, 11));
+    }
+
+    #[test]
+    fn scan_double_stops_at_trailing_text() {
+        assert_eq!(wcs_scan_double(reader("1.5, next")), (1.5, 3));
+        assert_eq!(wcs_scan_double(reader(" -0.25x")), (-0.25, 6));
+        assert_eq!(wcs_scan_double(reader("2e3,")), (2000.0, 3));
+        assert_eq!(wcs_scan_double(reader("1e+2 ")), (100.0, 4));
+        // 'e' with no digits is not part of the number.
+        assert_eq!(wcs_scan_double(reader("7extra")), (7.0, 1));
+        assert_eq!(wcs_scan_double(reader("1.")), (1.0, 2));
+        assert_eq!(wcs_scan_double(reader(".5,")), (0.5, 2));
+    }
+
+    #[test]
+    fn scan_double_no_conversion() {
+        assert_eq!(wcs_scan_double(reader("abc")), (0.0, 0));
+        assert_eq!(wcs_scan_double(reader(" .")), (0.0, 0));
+        assert_eq!(wcs_scan_double(reader("")), (0.0, 0));
+    }
+}
