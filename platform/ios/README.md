@@ -8,7 +8,7 @@ The emulation is not this project's work. Applesauce ships two emulator cores â€
 
 | Item | Current status |
 | --- | --- |
-| App version | 0.4.0 |
+| App version | 0.4.2 |
 | Emulator cores | HyperHLE v1.0.6 and touchHLE 0.2.3, switchable per game |
 | Minimum target | iOS 15.0 |
 | Tested environment | iPhone 16 Pro running iOS 27 beta 4 (24A5390f) |
@@ -78,7 +78,7 @@ The Sims Medieval now reaches gameplay, which was the original goal of this proj
 ## Current Limitations
 
 - JIT is required. There is no no-JIT ARM interpreter.
-- **The Sims Medieval:** no keyboard appears for naming your Sim or your kingdom, so those names cannot be entered. The game is playable past those screens; the confirm control sits near the top-right corner of the screen rather than where it is drawn.
+- **The Sims Medieval:** the confirm control on the naming screens sits near the top-right corner of the screen rather than where it is drawn. (The on-screen keyboard for entering those names now appears, as of 0.4.2.)
 - Games that render through an offscreen texture gain no extra detail from resolution scaling. The scale hack enlarges renderbuffers but not textures, so it is applied only where it is safe to do so.
 - The touchHLE compatibility database describes touchHLE generally, not guaranteed behaviour through this app.
 - Some games run under one core and not the other. If a game fails, switch its core and try again.
