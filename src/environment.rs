@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::libc::pthread::cond::pthread_cond_t;
 use crate::window::DeviceFamily;
+use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, Yielder};
 pub use mutex::{MutexId, MutexType, PTHREAD_MUTEX_DEFAULT};
 use nullable_box::NullableBox;
@@ -37,6 +38,24 @@ use nullable_box::NullableBox;
 pub type ThreadId = usize;
 
 pub type HostContext = Coroutine<Environment, Environment, Environment>;
+
+/// Host stack size for each emulated thread's coroutine. corosensei's default
+/// is 1 MiB, which only fits ~60 nested guest↔host `objc_msgSend` round trips
+/// (~16 KiB of host frames each) — the recursion guard in
+/// `objc_msgSend_inner` allows 128, so a deeply recursing app would overflow
+/// the stack into its guard page (SIGBUS) before the guard could bail out.
+/// The memory is mapped lazily, so the cost of the extra headroom is virtual
+/// address space, not RAM.
+const HOST_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// [Coroutine::new], but with [HOST_STACK_SIZE] instead of the default 1 MiB.
+fn coroutine_with_big_stack<F>(func: F) -> HostContext
+where
+    F: FnOnce(&Yielder<Environment, Environment>, Environment) -> Environment + 'static,
+{
+    let stack = DefaultStack::new(HOST_STACK_SIZE).expect("failed to allocate coroutine stack");
+    Coroutine::with_stack(stack, func)
+}
 
 /// Bookkeeping for a thread.
 pub struct Thread {
@@ -611,7 +630,7 @@ impl Environment {
             false => None,
         });
 
-        let main_thread_init_routine = Coroutine::new(move |yielder, mut env: Environment| {
+        let main_thread_init_routine = coroutine_with_big_stack(move |yielder, mut env| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
                     echo!("CPU emulation begins now.");
@@ -1199,7 +1218,7 @@ impl Environment {
         let stack_high_addr = stack_alloc.to_bits() + stack_size;
         assert!(stack_high_addr.is_multiple_of(4));
 
-        let thread_routine = Coroutine::new(move |yielder, mut env: Environment| {
+        let thread_routine = coroutine_with_big_stack(move |yielder, mut env| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
                     let regs = env.cpu.regs_mut();
