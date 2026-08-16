@@ -118,8 +118,24 @@ pub fn inspect_host_app(path: &std::path::Path) -> Result<HostAppMetadata, Strin
     let supports_landscape = supported_orientations
         .iter()
         .any(|orientation| orientation.contains("Landscape"));
-    let orientation_capabilities =
-        u32::from(supports_portrait) | (u32::from(supports_landscape) << 1);
+    // For a landscape-only app, the host UI needs to know *which* landscape
+    // direction the app actually wants, not just that it wants landscape:
+    // picking the wrong one shows a 180-degree-rotated picture and mirrored
+    // touch input, with nothing in the log to indicate why. Mirror the same
+    // UIInterfaceOrientation -> DeviceOrientation flip used for auto-startup
+    // orientation below, so these bits already say which DeviceOrientation
+    // (and therefore which native-host `orientation` launch code, 1 or 2)
+    // the app needs.
+    let wants_device_landscape_left = supported_orientations.iter().any(|&o| {
+        o == "UIInterfaceOrientationLandscapeRight" || o == "UIInterfaceOrientationLandscape"
+    });
+    let wants_device_landscape_right = supported_orientations
+        .iter()
+        .any(|&o| o == "UIInterfaceOrientationLandscapeLeft");
+    let orientation_capabilities = u32::from(supports_portrait)
+        | (u32::from(supports_landscape) << 1)
+        | (u32::from(wants_device_landscape_left) << 2)
+        | (u32::from(wants_device_landscape_right) << 3);
     let (icon_rgba, icon_width, icon_height) = match bundle.load_icon(&fs) {
         Ok(icon) => {
             let (width, height) = icon.dimensions();

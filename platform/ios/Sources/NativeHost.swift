@@ -140,6 +140,15 @@ private struct GameFile: Identifiable {
     ) -> Int {
         let supportsPortrait = orientationCapabilities & 1 != 0
         let supportsLandscape = orientationCapabilities & 2 != 0
+        // Which specific landscape direction (if only one) the app's Info.plist
+        // declares, already translated to the native-host `orientation` launch
+        // code (1 = DeviceOrientation::LandscapeLeft, 2 = ...Right — see
+        // touchHLE::inspect_host_app). A landscape-only app that declares just
+        // one of these must launch in that exact direction: guessing from
+        // whichever way the phone physically happened to be held when Play was
+        // tapped picks the wrong one about half the time.
+        let wantsDeviceLandscapeLeft = orientationCapabilities & 4 != 0
+        let wantsDeviceLandscapeRight = orientationCapabilities & 8 != 0
         // An explicit landscape or portrait choice overrides what the device is
         // doing, but never what a single-orientation bundle declares.
         let isExplicitLandscape = orientation == OrientationSetting.landscapeLeft
@@ -158,6 +167,12 @@ private struct GameFile: Identifiable {
             if isExplicitPortrait {
                 return 0
             }
+            if wantsDeviceLandscapeLeft != wantsDeviceLandscapeRight {
+                return wantsDeviceLandscapeLeft ? 1 : 2
+            }
+            // The bundle declares both directions (or neither precisely) —
+            // there's no single correct answer, so follow the device like a
+            // real auto-rotating app would.
             return currentInterfaceOrientation == .landscapeRight ? 2 : 1
         }
         if isExplicitLandscape {
