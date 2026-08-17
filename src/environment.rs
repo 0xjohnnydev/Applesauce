@@ -381,6 +381,29 @@ impl Environment {
             }
         }
 
+        // If the resolved startup orientation is landscape, tell the SDL
+        // orientation hint (`window::set_sdl2_orientation`) whether the
+        // bundle actually declares both landscape directions or just one.
+        // A landscape-only app that declares a single direction must have
+        // the other one refused by the OS: leaving both hinted lets UIKit
+        // auto-rotate the presented surface to whichever landscape the
+        // device is physically held in, while `Window::device_orientation`
+        // (and the touch-transform matrix derived from it) stays fixed at
+        // the declared direction — so taps land in the wrong place with
+        // nothing abnormal in the log. This is independent of *how*
+        // `initial_orientation` above was resolved (bundle-driven here, or
+        // an explicit `--landscape-left`/`--landscape-right` override from
+        // the native host), since it reflects what the app itself supports.
+        if matches!(
+            options.initial_orientation,
+            window::DeviceOrientation::LandscapeLeft | window::DeviceOrientation::LandscapeRight
+        ) {
+            let supported = bundle.supported_interface_orientations();
+            let has_left = supported.contains(&"UIInterfaceOrientationLandscapeLeft");
+            let has_right = supported.contains(&"UIInterfaceOrientationLandscapeRight");
+            options.landscape_both_directions = has_left && has_right;
+        }
+
         let device_family_override = options.device_family;
         // `--device-family=auto`: when the user hasn't pinned a specific family,
         // probe the host display and pick the closest-matching emulated device.

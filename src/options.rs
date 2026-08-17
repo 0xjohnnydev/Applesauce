@@ -43,6 +43,23 @@ pub struct Options {
     /// `--screen-size=WxH` override below.
     pub host_screen_size: Option<(u32, u32)>,
     pub initial_orientation: DeviceOrientation,
+    /// Whether the app's Info.plist declares support for *both*
+    /// `UIInterfaceOrientationLandscapeLeft` and `...LandscapeRight`, as
+    /// opposed to just one specific landscape direction. `true` is the
+    /// permissive default (matches prior behaviour, and is correct for
+    /// non-landscape apps where this is never consulted).
+    ///
+    /// This gates whether the host is allowed to hint both landscape
+    /// directions to SDL/UIKit (see `window::set_sdl2_orientation`). A
+    /// landscape-*only* app that declares just one direction must have the
+    /// other direction refused at the OS level: if UIKit is left free to
+    /// auto-rotate into the undeclared direction because the physical device
+    /// happens to be held that way, `Window::device_orientation` (and the
+    /// touch-transform matrix derived from it) stays fixed at the declared
+    /// direction while the OS quietly starts delivering touch coordinates in
+    /// the other one, so taps land in the wrong place with nothing
+    /// abnormal in the log.
+    pub landscape_both_directions: bool,
     /// Override the rotation applied when presenting the guest's renderbuffer,
     /// in degrees counter-clockwise (0, 90, 180 or 270). `None` means derive it
     /// from [Self::initial_orientation], which is the normal behaviour.
@@ -139,6 +156,7 @@ impl Default for Options {
             auto_device_family: false,
             host_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
+            landscape_both_directions: true,
             present_rotation_override: None,
             ios_es2_direct_present: false,
             scale_hack: NonZeroU32::new(1).unwrap(),

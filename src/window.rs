@@ -403,12 +403,26 @@ fn rotate_fullscreen_size(orientation: DeviceOrientation, screen_size: (u32, u32
     }
 }
 /// Tell SDL2 which device orientations the current game may use.
-fn set_sdl2_orientation(orientation: DeviceOrientation) {
+///
+/// `landscape_both_directions` must be `false` for a landscape-only app that
+/// declares just one specific direction (`LandscapeLeft` xor `LandscapeRight`
+/// in its Info.plist). Hinting both unconditionally — the old behaviour —
+/// leaves UIKit free to auto-rotate the presented surface to whichever
+/// landscape direction the device is physically held in, independent of
+/// `Window::device_orientation`, which stays fixed at the one direction the
+/// app declared. The picture still looks right (touchHLE rotates the
+/// framebuffer explicitly, see `present_renderbuffer`), but the OS delivers
+/// touch coordinates in the surface's *actual* current orientation, so taps
+/// land in the wrong place whenever the device happens to be held the
+/// "wrong" of the two ways — with nothing abnormal in the log.
+fn set_sdl2_orientation(orientation: DeviceOrientation, landscape_both_directions: bool) {
     // Despite the name, this hint works on Android too.
     sdl2::hint::set(
         "SDL_IOS_ORIENTATIONS",
         match orientation {
             DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => "Portrait",
+            DeviceOrientation::LandscapeLeft if !landscape_both_directions => "LandscapeLeft",
+            DeviceOrientation::LandscapeRight if !landscape_both_directions => "LandscapeRight",
             DeviceOrientation::LandscapeLeft | DeviceOrientation::LandscapeRight => {
                 "LandscapeLeft LandscapeRight"
             }
@@ -556,6 +570,9 @@ pub struct Window {
     splash_image_is_orientation_specific: bool,
     device_family: DeviceFamily,
     device_orientation: DeviceOrientation,
+    /// Copy of `Options::landscape_both_directions`. See there for why this
+    /// gates the SDL orientation hint in [set_sdl2_orientation].
+    landscape_both_directions: bool,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
     dpad_state: DpadState,
@@ -666,7 +683,7 @@ impl Window {
 
         let mut window = if Self::rotatable_fullscreen() {
             // Without this, SDL will force fullscreen mode to be portrait.
-            set_sdl2_orientation(device_orientation);
+            set_sdl2_orientation(device_orientation, options.landscape_both_directions);
             let screen_size = video_ctx.display_bounds(0).unwrap().size();
             let (width, height) = rotate_fullscreen_size(device_orientation, screen_size);
             let mut window_builder = video_ctx.window(title, width, height);
@@ -755,6 +772,7 @@ impl Window {
             splash_image_is_orientation_specific,
             device_family,
             device_orientation,
+            landscape_both_directions: options.landscape_both_directions,
             controller_ctx,
             controllers: Vec::new(),
             dpad_state: DpadState {
@@ -1851,7 +1869,7 @@ impl Window {
 
         if !self.fullscreen && !Self::rotatable_fullscreen() {
             let (width, height) = if Self::rotatable_fullscreen() {
-                set_sdl2_orientation(new_orientation);
+                set_sdl2_orientation(new_orientation, self.landscape_both_directions);
                 rotate_fullscreen_size(new_orientation, self.window.size())
             } else {
                 size_for_orientation(self.device_family, new_orientation, self.scale_hack)
@@ -1875,7 +1893,7 @@ impl Window {
         }
 
         if Self::rotatable_fullscreen() {
-            set_sdl2_orientation(new_orientation);
+            set_sdl2_orientation(new_orientation, self.landscape_both_directions);
             // Hack: from reading SDL2's source code, it seems that SDL2 will
             // only re-do the orientation when changing whether a window is
             // "resizeable" (can be rotated). You can't set the resizeable state
